@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS webhook_jobs_processing_updated_at_idx;

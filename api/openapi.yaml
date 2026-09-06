@@ -1,0 +1,265 @@
+openapi: 3.1.0
+info:
+  title: Webhook Delivery Service API
+  version: 1.0.0
+  description: REST API for accepting and inspecting asynchronously delivered webhook jobs.
+servers:
+  - url: http://localhost:8080
+paths:
+  /health:
+    get:
+      summary: Check application and database health
+      operationId: getHealth
+      responses:
+        "200":
+          description: Application is running and PostgreSQL is reachable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Health"
+        "503":
+          description: PostgreSQL is unavailable.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+  /api/v1/webhooks:
+    post:
+      summary: Create a webhook job
+      description: Reusing an Idempotency-Key with the same target URL, event type, and semantic JSON payload returns the original job. Reusing it for a different request returns a conflict.
+      operationId: createWebhook
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateWebhookRequest"
+            example:
+              target_url: https://example.com/webhook
+              event_type: payment.completed
+              payload:
+                payment_id: "123"
+                amount: 5000
+      responses:
+        "202":
+          description: Job accepted, or the existing job returned for a semantically equivalent idempotent request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CreateWebhookResponse"
+        "400":
+          description: Invalid header, URL, or JSON body.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "409":
+          description: The Idempotency-Key already belongs to a semantically different request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      summary: List webhook jobs
+      operationId: listWebhooks
+      parameters:
+        - name: status
+          in: query
+          required: false
+          description: Return only jobs with this status.
+          schema:
+            $ref: "#/components/schemas/WebhookStatus"
+        - name: limit
+          in: query
+          required: false
+          description: Maximum number of jobs, ordered by creation time descending.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+      responses:
+        "200":
+          description: Webhook jobs ordered by created_at descending.
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WebhookJob"
+        "400":
+          description: Invalid status or limit.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /api/v1/webhooks/{id}:
+    get:
+      summary: Get a webhook job
+      operationId: getWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Webhook job UUID.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Webhook job.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/WebhookJob"
+        "400":
+          description: The path ID is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "404":
+          description: Webhook job not found.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorEnvelope"
+        "500":
+          $ref: "#/components/responses/InternalError"
+components:
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: Client-generated key identifying one logical create operation.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+  responses:
+    InternalError:
+      description: Unexpected internal error. Database details are not exposed.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorEnvelope"
+  schemas:
+    Health:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          enum:
+            - ok
+    WebhookStatus:
+      type: string
+      enum:
+        - pending
+        - processing
+        - retry
+        - delivered
+        - failed
+    CreateWebhookRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - target_url
+        - event_type
+        - payload
+      properties:
+        target_url:
+          type: string
+          format: uri
+          maxLength: 2048
+          description: HTTP(S) URL resolving only to public destination addresses.
+        event_type:
+          type: string
+          minLength: 1
+          maxLength: 255
+        payload:
+          description: JSON value sent unchanged as the delivery request body.
+    CreateWebhookResponse:
+      type: object
+      required:
+        - id
+        - status
+      properties:
+        id:
+          type: string
+          format: uuid
+        status:
+          $ref: "#/components/schemas/WebhookStatus"
+    WebhookJob:
+      type: object
+      required:
+        - id
+        - target_url
+        - event_type
+        - payload
+        - status
+        - attempts
+        - max_attempts
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: string
+          format: uuid
+        target_url:
+          type: string
+          format: uri
+        event_type:
+          type: string
+        payload:
+          description: Original JSON payload.
+        status:
+          $ref: "#/components/schemas/WebhookStatus"
+        attempts:
+          type: integer
+          minimum: 0
+        max_attempts:
+          type: integer
+          minimum: 1
+        next_attempt_at:
+          type: string
+          format: date-time
+        last_error:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        delivered_at:
+          type: string
+          format: date-time
+    ErrorEnvelope:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              enum:
+                - validation_error
+                - not_found
+                - conflict
+                - internal_error
+            message:
+              type: string

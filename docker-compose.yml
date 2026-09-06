@@ -1,0 +1,51 @@
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-webhook}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-webhook}
+      POSTGRES_DB: ${POSTGRES_DB:-webhook}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+
+  migrate:
+    image: migrate/migrate:v4.18.3
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./migrations:/migrations:ro
+    command:
+      - -path=/migrations
+      - -database=postgres://${POSTGRES_USER:-webhook}:${POSTGRES_PASSWORD:-webhook}@postgres:5432/${POSTGRES_DB:-webhook}?sslmode=disable
+      - up
+    restart: "no"
+
+  app:
+    build: .
+    environment:
+      HTTP_ADDR: ${HTTP_ADDR:-:8080}
+      DATABASE_URL: postgres://${POSTGRES_USER:-webhook}:${POSTGRES_PASSWORD:-webhook}@postgres:5432/${POSTGRES_DB:-webhook}?sslmode=disable
+      WORKER_COUNT: ${WORKER_COUNT:-4}
+      JOB_BATCH_SIZE: ${JOB_BATCH_SIZE:-4}
+      DISPATCH_INTERVAL: ${DISPATCH_INTERVAL:-1s}
+      DELIVERY_TIMEOUT: ${DELIVERY_TIMEOUT:-5s}
+      PROCESSING_TIMEOUT: ${PROCESSING_TIMEOUT:-60s}
+    ports:
+      - "8080:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    init: true
+
+volumes:
+  postgres_data:
